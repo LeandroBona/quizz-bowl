@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+:root { --background: 216 33% 97%; --foreground: 221 48% 16%; --card: 0 0% 100%; --border: 216 23% 89%; --primary: 221 83% 53%; --muted: 216 25% 94%; --muted-foreground: 215 17% 48%; }
+.dark { --background: 222 47% 9%; --foreground: 210 40% 96%; --card: 222 39% 13%; --border: 218 28% 23%; --primary: 217 91% 60%; --muted: 220 30% 19%; --muted-foreground: 215 20% 66%; }
+* { box-sizing: border-box; }
+body { min-height: 100vh; background: hsl(var(--background)); color: hsl(var(--foreground)); }
+::selection { background: #bfdbfe; color: #10244b; }
+@keyframes presentation-enter { from { opacity: 0; transform: translateY(20px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes presentation-glow { 0%, 100% { box-shadow: 0 0 25px #34d39933; } 50% { box-shadow: 0 0 65px #34d39966; } }
+@keyframes presentation-trophy { 0%, 100% { transform: translateY(0) rotate(-3deg); } 50% { transform: translateY(-10px) rotate(3deg); } }
+.presentation-enter { animation: presentation-enter .55s ease-out both; }
+.presentation-enter-delay { animation-delay: .16s; }
+.presentation-correct { animation: presentation-glow 2.5s ease-in-out infinite; }
+.presentation-trophy { animation: presentation-trophy 3s ease-in-out infinite; }
+.presentation-champion::before, .presentation-champion::after { content: "✦  ✧  ✦  ✧  ✦"; position: absolute; left: 5%; top: 25%; color: #fbbf24; font-size: clamp(1.5rem, 4vw, 4rem); opacity: .65; transform: rotate(-12deg); }
+.presentation-champion::after { left: auto; right: 5%; top: 35%; transform: rotate(12deg); }
+.presentation-theme .text-cyan-300, .presentation-theme .text-cyan-200 { color: var(--presentation-accent); }
+.presentation-theme .bg-cyan-400 { background-color: var(--presentation-accent); }
+@media (prefers-reduced-motion: reduce) { .presentation-enter, .presentation-correct, .presentation-trophy { animation: none; } }

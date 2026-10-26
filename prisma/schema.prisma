@@ -1,0 +1,517 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum EventStatus {
+  PLANNED
+  ACTIVE
+  FINISHED
+}
+
+enum PresentationMode {
+  OPENING
+  TEAMS
+  QUESTION
+  REVEAL
+  SCORE
+  STANDINGS
+  BRACKET
+  CHAMPION
+}
+enum MatchStatus {
+  SCHEDULED
+  LIVE
+  FINISHED
+  CANCELLED
+}
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+enum QuestionStatus {
+  DRAFT
+  READY
+  ARCHIVED
+}
+enum QuestionType {
+  MULTIPLE_CHOICE
+  TRUE_FALSE
+  SHORT_ANSWER
+}
+enum QuestionAssignmentStatus {
+  ASSIGNED
+  REVEALED
+}
+enum QuestionPointsMode {
+  BY_DIFFICULTY
+  FIXED
+}
+enum ParticipationStatus {
+  ACTIVE
+  INACTIVE
+  WITHDRAWN
+}
+enum GroupFormat {
+  ROUND_ROBIN_SINGLE
+}
+enum MatchMode {
+  ALTERNATING
+  FREE
+}
+enum TimerState {
+  IDLE
+  RUNNING
+  PAUSED
+}
+enum BracketMode {
+  SEEDED
+  RANDOM
+}
+enum BracketTieRule {
+  SCORE
+  MANUAL
+}
+
+model Event {
+  id           String        @id @default(cuid())
+  name         String
+  description  String?       @db.Text
+  venue        String?
+  startsAt     DateTime?
+  endsAt       DateTime?
+  status       EventStatus   @default(PLANNED)
+  isDemo       Boolean       @default(false)
+  rules        String?       @db.LongText
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  participants Participant[]
+  phases       CoursePhase[]
+  teams        Team[]
+  questions    Question[]
+  questionSettings QuestionSettings?
+  questionUses QuestionUse[]
+  questionReservations EventQuestionReservation[]
+  groups       Group[]
+  groupPhases  GroupPhase[]
+  matches      Match[]
+  brackets     Bracket[]
+  presentation EventPresentation?
+  settings     EventSettings?
+  demoRun      DemoRun?
+  @@index([status, startsAt])
+}
+
+model EventSettings {
+  eventId            String         @id
+  event              Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  teamCount          Int            @default(21)
+  minMembers         Int            @default(5)
+  maxMembers         Int            @default(6)
+  groupCount         Int            @default(7)
+  teamsPerGroup      Int?           @default(3)
+  qualifiersPerGroup Int            @default(2)
+  winPoints          Int            @default(3)
+  drawPoints         Int            @default(1)
+  lossPoints         Int            @default(0)
+  allowDraws         Boolean        @default(false)
+  tieBreakers        Json
+  bracketMode        BracketMode    @default(SEEDED)
+  avoidSameGroup     Boolean        @default(true)
+  bracketTieRule     BracketTieRule @default(SCORE)
+  questionsPerMatch  Int            @default(5)
+  responseSeconds    Int            @default(30)
+  wrongPenalty       Int            @default(0)
+  updatedAt          DateTime       @updatedAt
+}
+
+model DemoRun {
+  eventId   String   @id
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  stage     Int      @default(0)
+  seed      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model EventPresentation {
+  id                String           @id @default(cuid())
+  eventId           String           @unique
+  event             Event            @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  mode              PresentationMode @default(OPENING)
+  matchId           String?
+  logoUrl           String?          @db.Text
+  welcomeMessage    String?          @db.Text
+  showQuestionScore Boolean          @default(true)
+  showExplanation   Boolean          @default(false)
+  soundsEnabled     Boolean          @default(false)
+  accentColor       String           @default("#38BDF8")
+  backgroundColor   String           @default("#06142E")
+  revision          Int              @default(0)
+  updatedAt         DateTime         @updatedAt
+}
+
+model CoursePhase {
+  id           String        @id @default(cuid())
+  eventId      String
+  event        Event         @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  name         String
+  sortOrder    Int           @default(0)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  participants Participant[]
+  @@unique([eventId, name])
+  @@index([eventId, sortOrder])
+}
+
+model Participant {
+  id        String       @id @default(cuid())
+  eventId   String
+  event     Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  name      String
+  email     String?
+  institution String?
+  phaseId   String?
+  phase     CoursePhase? @relation(fields: [phaseId], references: [id], onDelete: Restrict)
+  className String?
+  participationStatus ParticipationStatus @default(ACTIVE)
+  dedupeKey String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  membership TeamMember?
+  @@index([eventId, name])
+  @@unique([eventId, email])
+  @@unique([eventId, dedupeKey])
+  @@index([eventId, phaseId, participationStatus])
+}
+
+model Team {
+  id        String       @id @default(cuid())
+  eventId   String
+  event     Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  name      String
+  institution String?
+  color     String?      @default("#2563EB")
+  minMembers Int?
+  maxMembers Int?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  members   TeamMember[]
+  groups    GroupTeam[]
+  homeMatches Match[]    @relation("HomeTeam")
+  awayMatches Match[]    @relation("AwayTeam")
+  answers   Answer[]
+  scores    Score[]
+  bracketSlots BracketSlot[] @relation("BracketSlotTeam")
+  bracketWins BracketNode[] @relation("BracketWinner")
+  @@unique([eventId, name])
+  @@index([eventId])
+}
+
+model TeamMember {
+  id            String      @id @default(cuid())
+  teamId        String
+  participantId String      @unique
+  team          Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  participant   Participant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  joinedAt      DateTime    @default(now())
+  @@index([teamId])
+}
+
+model Question {
+  id         String         @id @default(cuid())
+  eventId    String?
+  event      Event?         @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  statement  String         @db.Text
+  answer     String         @db.Text
+  type       QuestionType   @default(SHORT_ANSWER)
+  alternatives Json?
+  explanation String?       @db.Text
+  category   String?
+  difficulty Difficulty     @default(MEDIUM)
+  points     Int            @default(10)
+  timeSeconds Int           @default(30)
+  imageUrl   String?        @db.LongText
+  isActive   Boolean        @default(false)
+  dedupeKey  String?        @unique
+  status     QuestionStatus @default(DRAFT)
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  answers    Answer[]
+  uses       QuestionUse[]
+  reservations EventQuestionReservation[]
+  @@index([eventId, status])
+  @@index([eventId, isActive, difficulty])
+}
+
+model QuestionSettings {
+  eventId       String             @id
+  event         Event              @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  pointsMode    QuestionPointsMode @default(BY_DIFFICULTY)
+  easyPoints    Int                @default(10)
+  mediumPoints  Int                @default(20)
+  hardPoints    Int                @default(30)
+  fixedPoints   Int                @default(10)
+  noRepeat      Boolean            @default(true)
+  updatedAt     DateTime           @updatedAt
+}
+
+model QuestionUse {
+  id           String                   @id @default(cuid())
+  eventId      String
+  event        Event                    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  matchId      String
+  match        Match                    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  questionId   String
+  question     Question                 @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  position     Int
+  awardedPoints Int
+  status       QuestionAssignmentStatus @default(ASSIGNED)
+  assignedAt   DateTime                 @default(now())
+  revealedAt   DateTime?
+  answers      Answer[]
+  @@unique([matchId, questionId])
+  @@unique([matchId, position])
+  @@index([eventId, questionId])
+}
+
+model EventQuestionReservation {
+  eventId    String
+  questionId String
+  event      Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+  @@id([eventId, questionId])
+  @@index([questionId])
+}
+
+model GroupPhase {
+  id                 String      @id @default(cuid())
+  eventId            String
+  event              Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  name               String      @default("Fase de grupos")
+  groupCount         Int
+  teamsPerGroup      Int?
+  qualifiersPerGroup Int
+  winPoints          Int         @default(3)
+  drawPoints         Int         @default(1)
+  lossPoints         Int         @default(0)
+  allowDraws         Boolean     @default(true)
+  tieBreakers        Json
+  format             GroupFormat @default(ROUND_ROBIN_SINGLE)
+  confirmedAt        DateTime?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+  groups             Group[]
+  memberships        GroupTeam[]
+  bracket            Bracket?
+  @@unique([eventId, name])
+}
+
+model Group {
+  id        String      @id @default(cuid())
+  eventId   String
+  event     Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  phaseId   String?
+  phase     GroupPhase? @relation(fields: [phaseId], references: [id], onDelete: Cascade)
+  name      String
+  stage     String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  teams     GroupTeam[]
+  matches   Match[]
+  @@unique([eventId, name])
+}
+
+model GroupTeam {
+  id      String @id @default(cuid())
+  groupId String
+  teamId  String
+  phaseId String?
+  phase   GroupPhase? @relation(fields: [phaseId], references: [id], onDelete: Cascade)
+  manualTieRank Int?
+  group   Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  team    Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  @@unique([groupId, teamId])
+  @@unique([phaseId, teamId])
+  @@unique([groupId, manualTieRank])
+  @@index([teamId])
+}
+
+model Match {
+  id         String      @id @default(cuid())
+  eventId    String
+  event      Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  groupId    String?
+  group      Group?      @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  homeTeamId String
+  homeTeam   Team        @relation("HomeTeam", fields: [homeTeamId], references: [id], onDelete: Cascade)
+  awayTeamId String
+  awayTeam   Team        @relation("AwayTeam", fields: [awayTeamId], references: [id], onDelete: Cascade)
+  scheduledAt DateTime?
+  round      String?
+  status     MatchStatus @default(SCHEDULED)
+  homeScore  Int         @default(0)
+  awayScore  Int         @default(0)
+  officialAt DateTime?
+  fixtureKey String?     @unique
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  answers    Answer[]
+  scores     Score[]
+  questionUses QuestionUse[]
+  session    MatchSession?
+  events     MatchEvent[]
+  bracketNode BracketNode?
+  @@index([eventId, status, scheduledAt])
+}
+
+model Bracket {
+  id              String         @id @default(cuid())
+  eventId         String
+  event           Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  phaseId         String         @unique
+  phase           GroupPhase     @relation(fields: [phaseId], references: [id], onDelete: Cascade)
+  mode            BracketMode    @default(SEEDED)
+  avoidSameGroup  Boolean        @default(true)
+  tieRule         BracketTieRule @default(SCORE)
+  teamCount       Int
+  bracketSize     Int
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  nodes           BracketNode[]
+  slots           BracketSlot[]
+  events          BracketEvent[]
+  @@index([eventId])
+}
+
+model BracketNode {
+  id             String        @id @default(cuid())
+  bracketId      String
+  bracket        Bracket       @relation(fields: [bracketId], references: [id], onDelete: Cascade)
+  roundIndex     Int
+  position       Int
+  matchId        String?       @unique
+  match          Match?        @relation(fields: [matchId], references: [id], onDelete: SetNull)
+  winnerTeamId   String?
+  winnerTeam     Team?         @relation("BracketWinner", fields: [winnerTeamId], references: [id], onDelete: Restrict)
+  winnerReason   String?       @db.Text
+  slots          BracketSlot[] @relation("NodeSlots")
+  sourceSlots    BracketSlot[] @relation("BracketSource")
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  @@unique([bracketId, roundIndex, position])
+  @@index([winnerTeamId])
+}
+
+model BracketSlot {
+  id           String       @id @default(cuid())
+  bracketId    String
+  bracket      Bracket      @relation(fields: [bracketId], references: [id], onDelete: Cascade)
+  nodeId       String
+  node         BracketNode  @relation("NodeSlots", fields: [nodeId], references: [id], onDelete: Cascade)
+  roundIndex   Int
+  side         Int
+  teamId       String?
+  team         Team?        @relation("BracketSlotTeam", fields: [teamId], references: [id], onDelete: Restrict)
+  sourceNodeId String?      @unique
+  sourceNode   BracketNode? @relation("BracketSource", fields: [sourceNodeId], references: [id], onDelete: SetNull)
+  seed         Int?
+  @@unique([nodeId, side])
+  @@unique([bracketId, roundIndex, teamId])
+  @@index([teamId])
+}
+
+model BracketEvent {
+  id        String   @id @default(cuid())
+  bracketId String
+  bracket   Bracket  @relation(fields: [bracketId], references: [id], onDelete: Cascade)
+  kind      String
+  details   Json
+  createdAt DateTime @default(now())
+  @@index([bracketId, createdAt])
+}
+
+model MatchSession {
+  matchId                String     @id
+  match                  Match      @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  mode                   MatchMode  @default(ALTERNATING)
+  wrongPenalty           Int        @default(0)
+  defaultDurationSeconds Int        @default(30)
+  currentPosition        Int?
+  turnTeamId             String?
+  timerState             TimerState @default(IDLE)
+  timerRemainingMs       Int        @default(30000)
+  timerStartedAt         DateTime?
+  startedAt              DateTime?
+  endedAt                DateTime?
+  revision               Int        @default(0)
+  createdAt              DateTime   @default(now())
+  updatedAt              DateTime   @updatedAt
+}
+
+model MatchEvent {
+  id        String   @id @default(cuid())
+  matchId   String
+  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  kind      String
+  details   Json
+  createdAt DateTime @default(now())
+  @@index([matchId, createdAt])
+}
+
+model Answer {
+  id         String   @id @default(cuid())
+  matchId    String
+  questionId String
+  teamId     String
+  assignmentId String?
+  assignment QuestionUse? @relation(fields: [assignmentId], references: [id], onDelete: SetNull)
+  response   String   @db.Text
+  isCorrect  Boolean?
+  points     Int      @default(0)
+  createdAt  DateTime @default(now())
+  match      Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  @@index([matchId, teamId])
+  @@unique([assignmentId, teamId])
+}
+
+model Score {
+  id        String   @id @default(cuid())
+  matchId   String
+  teamId    String
+  points    Int
+  reason    String?
+  createdAt DateTime @default(now())
+  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  @@index([matchId, teamId])
+}
+
+model AdminUser {
+  id           String         @id @default(cuid())
+  username     String         @unique @db.VarChar(80)
+  name         String         @db.VarChar(120)
+  passwordHash String         @db.VarChar(255)
+  isActive     Boolean        @default(true)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  sessions     AdminSession[]
+}
+
+model AdminSession {
+  tokenHash String    @id @db.Char(64)
+  userId    String
+  user      AdminUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+  @@index([userId])
+  @@index([expiresAt])
+}
