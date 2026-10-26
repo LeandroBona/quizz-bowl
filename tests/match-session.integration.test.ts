@@ -31,6 +31,12 @@ test("partida completa persiste pontuação, correções, auditoria e classifica
   const before=await phaseState(event.id,phase.id);if(before.groups[0].standings.some(row=>row.qualification==="QUALIFIED"))throw new Error("Classificação antes da homologação");
   await performMatchAction(match.id,{action:"finish",eventId:event.id});const review=await matchSessionState(match.id,event.id);if(review.homeScore!==20||review.awayScore!==2||review.status!=="FINISHED")throw new Error(`Placar incorreto ${review.homeScore}:${review.awayScore}`);
   await performMatchAction(match.id,{action:"homologate",eventId:event.id});const after=await phaseState(event.id,phase.id);if(after.groups[0].standings.filter(row=>row.qualification==="QUALIFIED").length!==1)throw new Error("Classificação não atualizada");
+  await performMatchAction(match.id,{action:"setScore",eventId:event.id,homeScore:15,awayScore:5,reason:"Correção do placar oficial",invalidateDependents:false});
+  const corrected=await matchSessionState(match.id,event.id);
+  if(!("events" in corrected)||corrected.homeScore!==15||corrected.awayScore!==5||corrected.officialAt||!corrected.events.some(row=>row.kind==="SCORE_CORRECTED"))throw new Error("Correção oficial do placar falhou");
+  await performMatchAction(match.id,{action:"homologate",eventId:event.id});
+  const reofficial=await matchSessionState(match.id,event.id);
+  if(!reofficial.officialAt||reofficial.homeScore!==15||reofficial.awayScore!==5)throw new Error("Nova homologação do placar falhou");
   const altMatch=await prisma.match.create({data:{eventId:event.id,homeTeamId:home.id,awayTeamId:away.id}});
   const q3=await prisma.question.create({data:{eventId:event.id,statement:"Terceira pergunta de teste?",answer:"Sim",type:"SHORT_ANSWER",difficulty:"EASY",points:10,timeSeconds:20,isActive:true,status:"READY"}});
   const q4=await prisma.question.create({data:{eventId:event.id,statement:"Quarta pergunta de teste?",answer:"Não",type:"SHORT_ANSWER",difficulty:"EASY",points:10,timeSeconds:20,isActive:true,status:"READY"}});

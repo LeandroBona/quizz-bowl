@@ -44,3 +44,21 @@ test("dois professores entram separadamente; painel protegido e telão público"
     await prisma.$disconnect();
   }
 });
+
+test("produção recusa login por HTTP antes de criar sessão", async () => {
+  const previousEnvironment = process.env.NODE_ENV;
+  Reflect.set(process.env, "NODE_ENV", "production");
+  try {
+    const response = await login(new Request("http://quiz.example/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://quiz.example" },
+      body: JSON.stringify({ username: "professor", password: "senha qualquer" }),
+    }));
+    assert.equal(response.status, 403);
+    assert.match((await response.json()).error, /HTTPS/);
+    assert.equal(response.headers.get("set-cookie"), null);
+  } finally {
+    if (previousEnvironment === undefined) Reflect.deleteProperty(process.env, "NODE_ENV");
+    else Reflect.set(process.env, "NODE_ENV", previousEnvironment);
+  }
+});

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { prisma } from "../src/server/db";
-import { confirmGroups, createPhase, generateFixtures, previewGroups, swapGroupTeams, updatePhase } from "../src/server/group-stage";
+import { confirmGroups, createPhase, generateFixtures, homologateGroupResult, previewGroups, saveGroupResult, swapGroupTeams, updatePhase } from "../src/server/group-stage";
 import { deleteRecord } from "../src/server/resources";
 import { defaultTieBreakers } from "../src/lib/group-stage";
 
@@ -36,6 +36,29 @@ test("a fase pode ser configurada antes das equipes, mas o sorteio espera a form
     const touched = await prisma.match.findFirstOrThrow({ where: { group: { phaseId: phase.id }, OR: [{ homeTeamId: second }, { awayTeamId: second }] } });
     await prisma.match.update({ where: { id: touched.id }, data: { status: "LIVE" } });
     await assert.rejects(() => swapGroupTeams(event.id, phase.id, first, second), /partidas iniciadas/);
+  } finally {
+    await deleteRecord("events", event.id, null);
+    await prisma.$disconnect();
+  }
+});
+
+test("correção do resultado de grupo exige motivo, revoga homologação e mantém histórico", async () => {
+  const event = await prisma.event.create({ data: { name: "Teste de correção do grupo" } });
+  try {
+    await prisma.team.createMany({ data: [{ eventId: event.id, name: "Azul" }, { eventId: event.id, name: "Branca" }] });
+    const phase = await createPhase({ eventId: event.id, name: "Grupos", groupCount: 1, teamsPerGroup: 2, qualifiersPerGroup: 1, winPoints: 3, drawPoints: 1, lossPoints: 0, allowDraws: false, tieBreakers: [...defaultTieBreakers], format: "ROUND_ROBIN_SINGLE" });
+    const preview = await previewGroups(event.id, phase.id);
+    await confirmGroups(event.id, phase.id, preview.signature, preview.groups.map(group => ({ name: group.name, teamIds: group.teams.map(team => team.id) })));
+    const match = await prisma.match.findFirstOrThrow({ where: { eventId: event.id } });
+    await saveGroupResult(event.id, match.id, 10, 0);
+    await homologateGroupResult(event.id, match.id, true);
+    await assert.rejects(() => saveGroupResult(event.id, match.id, 5, 10), /Justifique/);
+    const corrected = await saveGroupResult(event.id, match.id, 5, 10, "Correção da súmula");
+    assert.equal(corrected.officialAt, null);
+    assert.equal(corrected.awayScore, 10);
+    const events = await prisma.matchEvent.findMany({ where: { matchId: match.id }, orderBy: { createdAt: "asc" } });
+    assert.ok(events.some(row => row.kind === "SCORE_CORRECTED"));
+    assert.ok(events.some(row => row.kind === "HOMOLOGATE"));
   } finally {
     await deleteRecord("events", event.id, null);
     await prisma.$disconnect();

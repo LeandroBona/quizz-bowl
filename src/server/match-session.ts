@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/server/db";
 import { ApiError } from "@/server/errors";
 import { matchOutcome, nextAlternatingTurn, remainingTimerMs } from "@/lib/match-engine";
-import { validateBuzzerAward, validateBuzzerCorrection } from "@/lib/buzzer-scoring";
+import { orderBuzzerAnswers, validateBuzzerAward, validateBuzzerCorrection } from "@/lib/buzzer-scoring";
 import { publicQuestion } from "@/lib/question-public";
 import { homologateBracketWinner, revokeBracketWinner } from "@/server/bracket";
 
@@ -18,6 +18,7 @@ export const actionSchema=z.discriminatedUnion("action",[
   z.object({action:z.literal("timer"),eventId:id,command:z.enum(["START","PAUSE","RESET"]),seconds:z.number().int().min(5).max(3600).optional()}),
   z.object({action:z.literal("answer"),eventId:id,teamId:id,response:z.string().trim().max(5000).default(""),points:fixedPoints}),
   z.object({action:z.literal("correct"),eventId:id,answerId:id,response:z.string().trim().max(5000).default(""),points:fixedPoints,reason}),
+  z.object({action:z.literal("setScore"),eventId:id,homeScore:z.number().int().min(0).max(100000),awayScore:z.number().int().min(0).max(100000),reason,invalidateDependents:z.boolean().default(false)}),
   z.object({action:z.literal("adjust"),eventId:id,teamId:id,delta:z.number().int().min(-1000).max(1000).refine(v=>v!==0),reason}),
   z.object({action:z.literal("reveal"),eventId:id}),
   z.object({action:z.literal("finish"),eventId:id}),
@@ -33,7 +34,7 @@ function assertTeam(match:Match,teamId:string){if(teamId!==match.homeTeamId&&tea
 function mutable(match:Match){if(match.status!=="LIVE"&&match.status!=="FINISHED")throw new ApiError(409,"Inicie a partida antes de registrar pontos.");if(match.officialAt)throw new ApiError(409,"Revogue a homologação antes de alterar o resultado.");}
 async function lockSession(tx:Tx,matchId:string){try{await tx.matchSession.update({where:{matchId},data:{revision:{increment:1}}});}catch(error){if(error instanceof Prisma.PrismaClientKnownRequestError&&error.code==="P2025")throw new ApiError(409,"Configure a partida antes de iniciar.");throw error;}return tx.matchSession.findUniqueOrThrow({where:{matchId}});}
 async function currentAssignment(tx:Tx,matchId:string,session:MatchSession){if(!session.currentPosition)throw new ApiError(409,"Apresente uma questão primeiro.");const assignment=await tx.questionUse.findFirst({where:{matchId,position:session.currentPosition},include:{question:true}});if(!assignment)throw new ApiError(409,"Questão atual não encontrada.");return assignment;}
-async function addPoints(tx:Tx,match:Match,teamId:string,delta:number,reasonText:string){await tx.score.create({data:{matchId:match.id,teamId,points:delta,reason:reasonText}});await tx.match.update({where:{id:match.id},data:teamId===match.homeTeamId?{homeScore:{increment:delta}}:{awayScore:{increment:delta}}});}
+async function addPoints(tx:Tx,match:Match,teamId:string,delta:number,reasonText:string){if(!delta)return;await tx.score.create({data:{matchId:match.id,teamId,points:delta,reason:reasonText}});await tx.match.update({where:{id:match.id},data:teamId===match.homeTeamId?{homeScore:{increment:delta}}:{awayScore:{increment:delta}}});}
 async function showMatchOnScreen(tx:Tx,eventId:string,matchId:string,mode:"SCORE"|"QUESTION"|"REVEAL",force=false){
   if(!force){
     const current=await tx.eventPresentation.findUnique({where:{eventId},select:{mode:true}});
@@ -60,7 +61,8 @@ export async function matchSessionState(matchId:string,eventId:string,publicView
   const serverNow=new Date();const timer=match.session?{state:match.session.timerState,remainingMs:remainingTimerMs(match.session,serverNow),startedAt:match.session.timerStartedAt,serverNow}:null;
   if(publicView){const assignment=match.status==="LIVE"&&match.session?.currentPosition?match.questionUses.find(item=>item.position===match.session?.currentPosition):null;return {id:match.id,status:match.status,officialAt:match.officialAt,homeTeam:match.homeTeam,awayTeam:match.awayTeam,homeScore:match.homeScore,awayScore:match.awayScore,group:match.group,round:match.round,position:match.session?.currentPosition??null,totalQuestions:match.questionUses.length,turnTeamId:match.session?.turnTeamId??null,mode:match.session?.mode??null,timer,question:assignment?publicQuestion(assignment):null,serverNow};}
   const defaults=await prisma.eventSettings.findUnique({where:{eventId},select:{questionsPerMatch:true,responseSeconds:true,wrongPenalty:true}});
-  return {...match,timer,serverNow,defaults};
+  const answerEvents=await prisma.matchEvent.findMany({where:{matchId,kind:"ANSWER"},select:{details:true}});
+  return {...match,answers:orderBuzzerAnswers(match.answers,answerEvents),timer,serverNow,defaults};
 }
 export async function performMatchAction(matchId:string,input:MatchAction,actorUsername?:string){
   const record=(tx:Tx,id:string,kind:string,details:Prisma.InputJsonValue)=>writeMatchEvent(tx,id,kind,actorUsername?{...(details as Record<string,Prisma.InputJsonValue>),by:actorUsername}:details);
@@ -115,11 +117,28 @@ export async function performMatchAction(matchId:string,input:MatchAction,actorU
     }
     if(input.action==="correct"){
       mutable(match);const answer=await tx.answer.findFirst({where:{id:input.answerId,matchId},include:{assignment:true}});if(!answer?.assignment)throw new ApiError(404,"Resposta não encontrada na partida.");
-      const siblings=await tx.answer.findMany({where:{assignmentId:answer.assignment.id},orderBy:[{createdAt:"asc"},{id:"asc"}],select:{id:true,teamId:true,points:true}});try{validateBuzzerCorrection(siblings,answer.id,input.points);}catch(error){throw new ApiError(409,error instanceof Error?error.message:"Correção inválida.");}
+      const siblingRows=await tx.answer.findMany({where:{assignmentId:answer.assignment.id},select:{id:true,teamId:true,points:true,createdAt:true}});
+      const answerEvents=await tx.matchEvent.findMany({where:{matchId,kind:"ANSWER"},select:{details:true}});
+      const siblings=orderBuzzerAnswers(siblingRows,answerEvents);
+      try{validateBuzzerCorrection(siblings,answer.id,input.points);}catch(error){throw new ApiError(409,error instanceof Error?error.message:"Correção inválida.");}
       const points=input.points,correct=points>0;
       const delta=points-answer.points;const before={response:answer.response,correct:answer.isCorrect,points:answer.points};
       await tx.answer.update({where:{id:answer.id},data:{response:input.response,isCorrect:correct,points}});if(delta)await addPoints(tx,match,answer.teamId,delta,`Correção da questão ${answer.assignment.position}: ${input.reason}`);
       await record(tx,matchId,"CORRECT",{answerId:answer.id,before,after:{response:input.response,correct,points},delta,reason:input.reason});return {delta};
+    }
+    if(input.action==="setScore"){
+      if(match.status!=="LIVE"&&match.status!=="FINISHED")throw new ApiError(409,"Inicie a partida antes de corrigir o placar.");
+      if(match.group?.phaseId&&await tx.bracket.findUnique({where:{phaseId:match.group.phaseId},select:{id:true}}))throw new ApiError(409,"A fase de grupos já originou um chaveamento. Revise o mata-mata antes de corrigir esta classificação.");
+      if(match.officialAt){
+        await revokeBracketWinner(tx,matchId,input.invalidateDependents,`Placar corrigido: ${input.reason}`);
+        await tx.match.update({where:{id:matchId},data:{officialAt:null}});
+        await record(tx,matchId,"REVOKE",{previousOfficialAt:match.officialAt.toISOString(),invalidateDependents:input.invalidateDependents,reason:input.reason});
+      }
+      const homeDelta=input.homeScore-match.homeScore,awayDelta=input.awayScore-match.awayScore;
+      await addPoints(tx,match,match.homeTeamId,homeDelta,`Correção de placar: ${input.reason}`);
+      await addPoints(tx,match,match.awayTeamId,awayDelta,`Correção de placar: ${input.reason}`);
+      await record(tx,matchId,"SCORE_CORRECTED",{before:{homeScore:match.homeScore,awayScore:match.awayScore,officialAt:match.officialAt?.toISOString()??null},after:{homeScore:input.homeScore,awayScore:input.awayScore},reason:input.reason});
+      return {homeScore:input.homeScore,awayScore:input.awayScore,officialAt:null};
     }
     if(input.action==="adjust"){
       mutable(match);assertTeam(match,input.teamId);await addPoints(tx,match,input.teamId,input.delta,`Ajuste manual: ${input.reason}`);await record(tx,matchId,"ADJUST",{teamId:input.teamId,delta:input.delta,reason:input.reason});return {delta:input.delta};

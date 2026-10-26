@@ -1,6 +1,23 @@
 export type BuzzerAnswer = { teamId: string; points: number };
 export type BuzzerPoints = 0 | 5 | 10;
 
+export function orderBuzzerAnswers<T extends { id: string; createdAt: Date | string; assignmentId?: string | null }>(answers: T[], events: { details: unknown }[]): T[] {
+  const stage = new Map<string, number>();
+  for (const event of events) {
+    if (!event.details || typeof event.details !== "object" || Array.isArray(event.details)) continue;
+    const details = event.details as { answerId?: unknown; buzzerStage?: unknown };
+    if (typeof details.answerId === "string") {
+      if (details.buzzerStage === "FIRST") stage.set(details.answerId, 0);
+      if (details.buzzerStage === "REBOUND") stage.set(details.answerId, 1);
+    }
+  }
+  return [...answers].sort((a, b) => {
+    const first = stage.get(a.id), second = stage.get(b.id);
+    if (a.assignmentId === b.assignmentId && first !== undefined && second !== undefined && first !== second) return first - second;
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() || a.id.localeCompare(b.id);
+  });
+}
+
 export function buzzerState(homeTeamId: string, awayTeamId: string, answers: BuzzerAnswer[]) {
   if (answers.length === 0) return { stage: "FIRST" as const, eligibleTeamIds: [homeTeamId, awayTeamId], allowedPoints: [0, 10] as const };
   if (answers.length === 1 && answers[0].points <= 0) {

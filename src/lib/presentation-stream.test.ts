@@ -20,3 +20,15 @@ test("duas janelas recebem a mesma mudança pelo stream SSE", async () => {
     await Promise.all([first.cancel(), second.cancel()]);
   }
 });
+
+test("telão recebe o estado inicial sem esperar outra consulta ao banco", async () => {
+  let reads = 0;
+  const abort = new AbortController();
+  const reader = createPresentationStream(abort.signal, async () => { reads++; return { mode: "QUESTION" }; }, 20, { mode: "OPENING" }).getReader();
+  try {
+    assert.match(new TextDecoder().decode((await reader.read()).value), /"mode":"OPENING"/);
+    assert.equal(reads, 0);
+    assert.match(new TextDecoder().decode((await reader.read()).value), /"mode":"QUESTION"/);
+    assert.equal(reads, 1);
+  } finally { abort.abort(); await reader.cancel(); }
+});

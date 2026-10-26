@@ -85,6 +85,34 @@ export async function generateFixtures(eventId:string,phaseId:string) {
     return {count};
   },serial);
 }
-export async function saveGroupResult(eventId:string,matchId:string,homeScore:number,awayScore:number) { return prisma.$transaction(async tx=>{ const match=await tx.match.findFirst({where:{id:matchId,eventId},include:{group:true,session:true}}); if(!match?.group?.phaseId) throw new ApiError(404,"Confronto da fase não encontrado."); if(await tx.bracket.findUnique({where:{phaseId:match.group.phaseId},select:{id:true}}))throw new ApiError(409,"A fase já originou um chaveamento. Corrigir a classificação de origem exige reconstruir o mata-mata."); if(match.session) throw new ApiError(409,"Use a tela da partida para alterar este placar."); const phase=await tx.groupPhase.findUnique({where:{id:match.group.phaseId}}); if(!phase?.allowDraws && homeScore===awayScore) throw new ApiError(400,"O regulamento não permite empate."); return tx.match.update({where:{id:matchId},data:{homeScore,awayScore,status:"FINISHED",officialAt:null}}); },serial); }
-export async function homologateGroupResult(eventId:string,matchId:string,official:boolean) { return prisma.$transaction(async tx=>{ const match=await tx.match.findFirst({where:{id:matchId,eventId},include:{group:true,session:true}}); if(!match?.group?.phaseId) throw new ApiError(404,"Confronto da fase não encontrado."); if(await tx.bracket.findUnique({where:{phaseId:match.group.phaseId},select:{id:true}}))throw new ApiError(409,"A fase já originou um chaveamento. A classificação de origem está bloqueada."); if(match.session) throw new ApiError(409,"Use a tela da partida para homologar este resultado."); const phase=await tx.groupPhase.findUnique({where:{id:match.group.phaseId}}); if(official && match.status!=="FINISHED") throw new ApiError(409,"Registre o resultado antes de homologar."); if(official && !phase?.allowDraws && match.homeScore===match.awayScore) throw new ApiError(400,"O regulamento não permite empate."); return tx.match.update({where:{id:matchId},data:{officialAt:official?new Date():null}}); },serial); }
+export async function saveGroupResult(eventId:string,matchId:string,homeScore:number,awayScore:number,reason?:string) {
+  return prisma.$transaction(async tx=>{
+    const match=await tx.match.findFirst({where:{id:matchId,eventId},include:{group:true,session:true}});
+    if(!match?.group?.phaseId)throw new ApiError(404,"Confronto da fase não encontrado.");
+    if(await tx.bracket.findUnique({where:{phaseId:match.group.phaseId},select:{id:true}}))throw new ApiError(409,"A fase já originou um chaveamento. Corrigir a classificação de origem exige reconstruir o mata-mata.");
+    if(match.session)throw new ApiError(409,"Use a tela da partida para alterar este placar.");
+    if(match.status==="FINISHED"&&match.homeScore===homeScore&&match.awayScore===awayScore)return match;
+    if(match.status==="FINISHED"&&(!reason||reason.trim().length<5))throw new ApiError(400,"Justifique a correção do resultado com pelo menos cinco caracteres.");
+    const phase=await tx.groupPhase.findUnique({where:{id:match.group.phaseId}});
+    if(!phase?.allowDraws&&homeScore===awayScore)throw new ApiError(400,"O regulamento não permite empate.");
+    const updated=await tx.match.update({where:{id:matchId},data:{homeScore,awayScore,status:"FINISHED",officialAt:null}});
+    await tx.matchEvent.create({data:{matchId,kind:match.status==="FINISHED"?"SCORE_CORRECTED":"SCORE_RECORDED",details:{before:{homeScore:match.homeScore,awayScore:match.awayScore,officialAt:match.officialAt?.toISOString()??null},after:{homeScore,awayScore},reason:reason?.trim()??null}}});
+    return updated;
+  },serial);
+}
+export async function homologateGroupResult(eventId:string,matchId:string,official:boolean) {
+  return prisma.$transaction(async tx=>{
+    const match=await tx.match.findFirst({where:{id:matchId,eventId},include:{group:true,session:true}});
+    if(!match?.group?.phaseId)throw new ApiError(404,"Confronto da fase não encontrado.");
+    if(await tx.bracket.findUnique({where:{phaseId:match.group.phaseId},select:{id:true}}))throw new ApiError(409,"A fase já originou um chaveamento. A classificação de origem está bloqueada.");
+    if(match.session)throw new ApiError(409,"Use a tela da partida para homologar este resultado.");
+    const phase=await tx.groupPhase.findUnique({where:{id:match.group.phaseId}});
+    if(official&&match.status!=="FINISHED")throw new ApiError(409,"Registre o resultado antes de homologar.");
+    if(official&&!phase?.allowDraws&&match.homeScore===match.awayScore)throw new ApiError(400,"O regulamento não permite empate.");
+    if(Boolean(match.officialAt)===official)return match;
+    const updated=await tx.match.update({where:{id:matchId},data:{officialAt:official?new Date():null}});
+    await tx.matchEvent.create({data:{matchId,kind:official?"HOMOLOGATE":"REVOKE",details:{homeScore:match.homeScore,awayScore:match.awayScore,previousOfficialAt:match.officialAt?.toISOString()??null}}});
+    return updated;
+  },serial);
+}
 export async function setManualTieRank(eventId:string,phaseId:string,groupId:string,teamId:string,rank:number|null) { await requirePhase(phaseId,eventId); if(await prisma.bracket.findUnique({where:{phaseId},select:{id:true}}))throw new ApiError(409,"A fase já originou um chaveamento. A classificação de origem está bloqueada."); const group=await prisma.group.findFirst({where:{id:groupId,phaseId}}); if(!group) throw new ApiError(404,"Grupo não encontrado."); if(rank!==null && await prisma.groupTeam.count({where:{groupId,manualTieRank:rank,teamId:{not:teamId}}})) throw new ApiError(409,"Esta prioridade já foi atribuída a outra equipe do grupo."); const member=await prisma.groupTeam.findFirst({where:{groupId,phaseId,teamId}}); if(!member) throw new ApiError(404,"Equipe não pertence ao grupo."); return prisma.groupTeam.update({where:{id:member.id},data:{manualTieRank:rank}}); }

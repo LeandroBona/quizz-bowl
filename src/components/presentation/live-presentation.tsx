@@ -27,16 +27,46 @@ function useLive(eventId: string) {
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState("");
   const [offset, setOffset] = useState(0);
+  const latestSnapshot = useRef(0);
   useEffect(() => {
+    let stopped = false;
+    let fetching = false;
+    let lastStreamAt = 0;
+    const accept = (snapshot: Snapshot) => {
+      const time = new Date(snapshot.serverNow).getTime();
+      if (stopped || !Number.isFinite(time) || time < latestSnapshot.current) return;
+      latestSnapshot.current = time;
+      setOffset(time - Date.now());
+      setData(snapshot);
+      setConnected(true);
+      setError("");
+    };
+    const refresh = async () => {
+      if (fetching) return;
+      fetching = true;
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 10000);
+      try {
+        const response = await fetch(`/api/public/events/${encodeURIComponent(eventId)}/presentation`, { cache: "no-store", signal: controller.signal });
+        const snapshot = await response.json();
+        if (!response.ok) throw new Error(typeof snapshot?.error === "string" ? snapshot.error : `Falha no telão (${response.status}).`);
+        accept(snapshot as Snapshot);
+      } catch (caught) {
+        if (!stopped) {
+          setConnected(false);
+          setError(caught instanceof DOMException && caught.name === "AbortError" ? "O servidor do telão não respondeu. Verifique a conexão." : caught instanceof Error ? caught.message : "Não foi possível carregar o telão.");
+        }
+      } finally { window.clearTimeout(timeout); fetching = false; }
+    };
+    void refresh();
+    const poll = window.setInterval(() => { if (Date.now() - lastStreamAt > 5000) void refresh(); }, 3000);
     const stream = new EventSource(`/api/public/events/${encodeURIComponent(eventId)}/stream`);
     stream.addEventListener("presentation", event => {
-      const received = Date.now();
-      const snapshot = JSON.parse((event as MessageEvent).data) as Snapshot;
-      setOffset(new Date(snapshot.serverNow).getTime() - received);
-      setData(snapshot); setConnected(true); setError("");
+      try { lastStreamAt = Date.now(); accept(JSON.parse((event as MessageEvent).data) as Snapshot); }
+      catch { setError("Atualização do telão inválida. Tentando novamente…"); }
     });
-    stream.onerror = () => { setConnected(false); setError("Reconectando ao evento…"); };
-    return () => stream.close();
+    stream.onerror = () => { if (!stopped) { lastStreamAt = 0; setError(current => current || "Stream indisponível; atualização automática em intervalos."); void refresh(); } };
+    return () => { stopped = true; stream.close(); window.clearInterval(poll); };
   }, [eventId]);
   return { data, connected, error, offset };
 }

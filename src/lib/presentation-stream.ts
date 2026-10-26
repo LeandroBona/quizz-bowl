@@ -1,4 +1,4 @@
-export function createPresentationStream(signal: AbortSignal, snapshot: () => Promise<unknown>, intervalMs = 1500) {
+export function createPresentationStream(signal: AbortSignal, snapshot: () => Promise<unknown>, intervalMs = 1500, initialSnapshot?: unknown) {
   const encoder = new TextEncoder();
   let timer: ReturnType<typeof setInterval> | undefined;
   let closed = false;
@@ -19,7 +19,8 @@ export function createPresentationStream(signal: AbortSignal, snapshot: () => Pr
           if (!closed) controller.enqueue(encoder.encode(": reconectando\n\n"));
         } finally { reading = false; }
       };
-      void send();
+      if (initialSnapshot !== undefined) controller.enqueue(encoder.encode(`id: ${++sequence}\nevent: presentation\ndata: ${JSON.stringify(initialSnapshot)}\n\n`));
+      else void send();
       timer = setInterval(() => void send(), intervalMs);
     },
     cancel() { stop(); },
