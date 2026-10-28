@@ -13,3 +13,8 @@ export function matchOutcome(homeTeamId:string,awayTeamId:string,homeScore:numbe
   return {homeScore,awayScore,winnerTeamId:homeScore===awayScore?null:homeScore>awayScore?homeTeamId:awayTeamId,draw:homeScore===awayScore};
 }
 export function nextAlternatingTurn(homeTeamId:string,awayTeamId:string,currentTeamId:string|null){return currentTeamId===homeTeamId?awayTeamId:homeTeamId;}
+export function knockoutNextQuestion(currentPosition:number,hasAssignedNext:boolean,tied:boolean):"NEXT"|"EXTRA"|"COMPLETE"|"MISSING"{
+  if(currentPosition<10)return hasAssignedNext?"NEXT":"MISSING";
+  if(!tied)return "COMPLETE";
+  return hasAssignedNext?"NEXT":"EXTRA";
+}

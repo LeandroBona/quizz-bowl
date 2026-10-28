@@ -119,7 +119,7 @@ model EventSettings {
   winPoints          Int            @default(3)
   drawPoints         Int            @default(1)
   lossPoints         Int            @default(0)
-  allowDraws         Boolean        @default(false)
+  allowDraws         Boolean        @default(true)
   tieBreakers        Json
   bracketMode        BracketMode    @default(SEEDED)
   avoidSameGroup     Boolean        @default(true)
@@ -480,7 +480,7 @@ model Answer {
   question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
   team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
   @@index([matchId, teamId])
-  @@unique([assignmentId, teamId])
+  @@index([assignmentId, teamId])
 }
 
 model Score {

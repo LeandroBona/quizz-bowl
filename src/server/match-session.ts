@@ -1,15 +1,16 @@
+import { randomInt } from "node:crypto";
 import { Prisma, type Match, type MatchSession } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/db";
 import { ApiError } from "@/server/errors";
-import { matchOutcome, nextAlternatingTurn, remainingTimerMs } from "@/lib/match-engine";
-import { orderBuzzerAnswers, validateBuzzerAward, validateBuzzerCorrection } from "@/lib/buzzer-scoring";
+import { knockoutNextQuestion, matchOutcome, nextAlternatingTurn, remainingTimerMs } from "@/lib/match-engine";
+import { buzzerState, orderBuzzerAnswers, validateBuzzerAward, validateBuzzerCorrection } from "@/lib/buzzer-scoring";
 import { publicQuestion } from "@/lib/question-public";
 import { homologateBracketWinner, revokeBracketWinner } from "@/server/bracket";
 
 const id=z.string().min(1);
 const reason=z.string().trim().min(5).max(500);
-const fixedPoints=z.union([z.literal(0),z.literal(5),z.literal(10)]);
+const fixedPoints=z.union([z.literal(0),z.literal(5),z.literal(10),z.literal(15),z.literal(20)]);
 export const actionSchema=z.discriminatedUnion("action",[
   z.object({action:z.literal("configure"),eventId:id,mode:z.enum(["ALTERNATING","FREE"]),wrongPenalty:z.number().int().min(0).max(1000),defaultDurationSeconds:z.number().int().min(5).max(3600)}),
   z.object({action:z.literal("start"),eventId:id}),
@@ -78,13 +79,33 @@ export async function performMatchAction(matchId:string,input:MatchAction,actorU
       if(match.status!=="SCHEDULED")throw new ApiError(409,"A partida já foi iniciada ou encerrada.");
       await tx.event.update({where:{id:match.eventId},data:{updatedAt:now}});
       if(await tx.match.count({where:{eventId:match.eventId,status:"LIVE",id:{not:matchId}}}))throw new ApiError(409,"Já existe uma partida em andamento neste evento. Encerre-a antes de iniciar outra.");
-      if(!await tx.questionUse.count({where:{matchId}}))throw new ApiError(409,"Associe pelo menos uma questão antes de iniciar.");
+      const questionCount=await tx.questionUse.count({where:{matchId}});
+      if(await tx.bracketNode.count({where:{matchId}})) {
+        if(questionCount!==10)throw new ApiError(409,"Partidas do mata-mata precisam de 10 questões iniciais. Complete o roteiro antes de iniciar.");
+      } else if(!questionCount)throw new ApiError(409,"Associe pelo menos uma questão antes de iniciar.");
       if(!await tx.score.count({where:{matchId}})){if(match.homeScore)await tx.score.create({data:{matchId,teamId:match.homeTeamId,points:match.homeScore,reason:"Placar inicial"}});if(match.awayScore)await tx.score.create({data:{matchId,teamId:match.awayTeamId,points:match.awayScore,reason:"Placar inicial"}});}
       await tx.match.update({where:{id:matchId},data:{status:"LIVE",officialAt:null}});await tx.matchSession.update({where:{matchId},data:{startedAt:now,turnTeamId:match.homeTeamId}});await showMatchOnScreen(tx,match.eventId,matchId,"SCORE",true);await record(tx,matchId,"START",{at:now.toISOString()});return {started:true};
     }
     if(input.action==="present"){
       if(match.status!=="LIVE")throw new ApiError(409,"A partida precisa estar em andamento.");
-      const next=await tx.questionUse.findFirst({where:{matchId,position:{gt:session.currentPosition??0}},orderBy:{position:"asc"},select:{id:true,position:true,question:{select:{timeSeconds:true}}}});if(!next)throw new ApiError(409,"Não há mais questões para apresentar.");
+      const knockout=await tx.bracketNode.count({where:{matchId}})>0;
+      let next=await tx.questionUse.findFirst({where:{matchId,position:{gt:session.currentPosition??0}},orderBy:{position:"asc"},select:{id:true,position:true,question:{select:{timeSeconds:true}}}});
+      if(knockout){
+        const step=knockoutNextQuestion(session.currentPosition??0,Boolean(next),match.homeScore===match.awayScore);
+        if(step==="COMPLETE")throw new ApiError(409,"O desempate só abre uma questão extra quando o placar está empatado.");
+        if(step==="MISSING"||step==="EXTRA"){
+          const settings=await tx.questionSettings.findUnique({where:{eventId:match.eventId}});
+          const used=await tx.questionUse.findMany({where:{matchId},select:{questionId:true}});
+          const candidates=await tx.question.findMany({where:{isActive:true,OR:[{eventId:match.eventId},{eventId:null}],id:{notIn:used.map(row=>row.questionId)},...(settings?.noRepeat!==false?{uses:{none:{eventId:match.eventId}},reservations:{none:{eventId:match.eventId}}}:{})},select:{id:true,difficulty:true,timeSeconds:true}});
+          if(!candidates.length)throw new ApiError(409,step==="EXTRA"?"Não há questão inédita disponível para o desempate. Cadastre mais questões antes de continuar.":"Não há questão inédita para completar as 10 perguntas do mata-mata. Cadastre mais questões antes de continuar.");
+          const question=candidates[randomInt(candidates.length)];
+          if(settings?.noRepeat!==false)await tx.eventQuestionReservation.create({data:{eventId:match.eventId,questionId:question.id}});
+          const points=settings?.pointsMode==="FIXED"?settings.fixedPoints:question.difficulty==="EASY"?settings?.easyPoints??10:question.difficulty==="HARD"?settings?.hardPoints??30:settings?.mediumPoints??20;
+          next=await tx.questionUse.create({data:{eventId:match.eventId,matchId,questionId:question.id,position:(session.currentPosition??0)+1,awardedPoints:points},select:{id:true,position:true,question:{select:{timeSeconds:true}}}});
+          await record(tx,matchId,step==="EXTRA"?"EXTRA_QUESTION":"QUESTION_ADDED",{position:next.position,questionId:question.id});
+        }
+      }
+      if(!next)throw new ApiError(409,"Não há mais questões para apresentar.");
       const duration=session.defaultDurationSeconds;
       const turn=session.mode==="ALTERNATING"&&session.currentPosition?nextAlternatingTurn(match.homeTeamId,match.awayTeamId,session.turnTeamId):session.turnTeamId||match.homeTeamId;
       await tx.matchSession.update({where:{matchId},data:{currentPosition:next.position,turnTeamId:turn,timerState:"IDLE",timerRemainingMs:duration*1000,timerStartedAt:null}});await showMatchOnScreen(tx,match.eventId,matchId,"QUESTION");await record(tx,matchId,"PRESENT",{position:next.position,assignmentId:next.id,turnTeamId:turn,durationSeconds:duration});return {position:next.position};
@@ -102,25 +123,35 @@ export async function performMatchAction(matchId:string,input:MatchAction,actorU
     }
     if(input.action==="answer"){
       if(match.status!=="LIVE")throw new ApiError(409,"A partida precisa estar em andamento.");assertTeam(match,input.teamId);
-      const assignment=await currentAssignment(tx,matchId,session);if(assignment.status==="REVEALED")throw new ApiError(409,"A resposta correta já foi revelada.");
-      const previous=await tx.answer.findMany({where:{assignmentId:assignment.id},orderBy:[{createdAt:"asc"},{id:"asc"}],select:{id:true,teamId:true,points:true}});
-      try{validateBuzzerAward(match.homeTeamId,match.awayTeamId,previous,input.teamId,input.points);}catch(error){throw new ApiError(409,error instanceof Error?error.message:"Pontuação inválida.");}
-      if(previous.some(answer=>answer.teamId===input.teamId))throw new ApiError(409,"Esta equipe já recebeu pontuação nesta questão.");
+      const assignment=await currentAssignment(tx,matchId,session);
+      const rows=await tx.answer.findMany({where:{assignmentId:assignment.id},select:{id:true,teamId:true,points:true,createdAt:true,assignmentId:true}});
+      const answerEvents=await tx.matchEvent.findMany({where:{matchId,kind:"ANSWER"},select:{details:true}});
+      const previous=orderBuzzerAnswers(rows,answerEvents);
+      const format=await tx.bracketNode.count({where:{matchId}})>0?"KNOCKOUT":"GROUP";
+      let stage: ReturnType<typeof validateBuzzerAward>;
+      try{stage=validateBuzzerAward(match.homeTeamId,match.awayTeamId,previous,input.teamId,input.points,format);}catch(error){throw new ApiError(409,error instanceof Error?error.message:"Pontuação inválida.");}
       const points=input.points,correct=points>0;
-      const answer=await tx.answer.create({data:{matchId,questionId:assignment.questionId,assignmentId:assignment.id,teamId:input.teamId,response:input.response,isCorrect:correct,points}});
+      let answer;
+      try {
+        answer=await tx.answer.create({data:{matchId,questionId:assignment.questionId,assignmentId:assignment.id,teamId:input.teamId,response:input.response,isCorrect:correct,points}});
+      } catch (error) {
+        if(stage.stage==="REPLY"&&error instanceof Prisma.PrismaClientKnownRequestError&&error.code==="P2002")throw new ApiError(409,"A tréplica exige a migração do banco. Execute npm run db:deploy na VPS e reinicie o servidor.");
+        throw error;
+      }
       await addPoints(tx,match,input.teamId,points,`Questão ${assignment.position}: ${points} pontos`);
-      const rebound=previous.length===0&&points===0;
-      const nextTeamId=rebound?(input.teamId===match.homeTeamId?match.awayTeamId:match.homeTeamId):input.teamId;
-      await tx.matchSession.update({where:{matchId},data:{turnTeamId:nextTeamId,timerState:rebound?"IDLE":"PAUSED",timerRemainingMs:rebound?session.defaultDurationSeconds*1000:remainingTimerMs(session,now),timerStartedAt:null}});
-      if(rebound)await record(tx,matchId,"REBOUND",{position:assignment.position,firstTeamId:input.teamId,nextTeamId});
-      await record(tx,matchId,"ANSWER",{answerId:answer.id,position:assignment.position,teamId:input.teamId,response:input.response,correct,points,buzzerStage:previous.length?"REBOUND":"FIRST"});return answer;
+      const nextState=buzzerState(match.homeTeamId,match.awayTeamId,[...previous,{teamId:input.teamId,points}],format);
+      const nextTeamId=nextState.eligibleTeamIds[0]??input.teamId;
+      await tx.matchSession.update({where:{matchId},data:{turnTeamId:nextTeamId,timerState:nextState.stage==="DONE"?"PAUSED":"IDLE",timerRemainingMs:nextState.stage==="DONE"?remainingTimerMs(session,now):session.defaultDurationSeconds*1000,timerStartedAt:null}});
+      if(nextState.stage!=="DONE")await record(tx,matchId,nextState.stage,{position:assignment.position,nextTeamId});
+      await record(tx,matchId,"ANSWER",{answerId:answer.id,position:assignment.position,teamId:input.teamId,response:input.response,correct,points,buzzerStage:stage.stage});return answer;
     }
     if(input.action==="correct"){
       mutable(match);const answer=await tx.answer.findFirst({where:{id:input.answerId,matchId},include:{assignment:true}});if(!answer?.assignment)throw new ApiError(404,"Resposta não encontrada na partida.");
       const siblingRows=await tx.answer.findMany({where:{assignmentId:answer.assignment.id},select:{id:true,teamId:true,points:true,createdAt:true}});
       const answerEvents=await tx.matchEvent.findMany({where:{matchId,kind:"ANSWER"},select:{details:true}});
       const siblings=orderBuzzerAnswers(siblingRows,answerEvents);
-      try{validateBuzzerCorrection(siblings,answer.id,input.points);}catch(error){throw new ApiError(409,error instanceof Error?error.message:"Correção inválida.");}
+      const format=await tx.bracketNode.count({where:{matchId}})>0?"KNOCKOUT":"GROUP";
+      try{validateBuzzerCorrection(siblings,answer.id,input.points,format);}catch(error){throw new ApiError(409,error instanceof Error?error.message:"Correção inválida.");}
       const points=input.points,correct=points>0;
       const delta=points-answer.points;const before={response:answer.response,correct:answer.isCorrect,points:answer.points};
       await tx.answer.update({where:{id:answer.id},data:{response:input.response,isCorrect:correct,points}});if(delta)await addPoints(tx,match,answer.teamId,delta,`Correção da questão ${answer.assignment.position}: ${input.reason}`);
@@ -148,6 +179,10 @@ export async function performMatchAction(matchId:string,input:MatchAction,actorU
     }
     if(input.action==="finish"){
       if(match.status!=="LIVE")throw new ApiError(409,"Somente partida em andamento pode ser encerrada.");
+      if(await tx.bracketNode.count({where:{matchId}})>0){
+        if((session.currentPosition??0)<10)throw new ApiError(409,"Apresente as 10 questões do mata-mata antes de encerrar.");
+        if(match.homeScore===match.awayScore)throw new ApiError(409,"Placar empatado. Apresente uma questão extra para o desempate.");
+      }
       const remaining=remainingTimerMs(session,now);await tx.matchSession.update({where:{matchId},data:{endedAt:now,timerState:"PAUSED",timerRemainingMs:remaining,timerStartedAt:null}});await tx.match.update({where:{id:matchId},data:{status:"FINISHED",officialAt:null}});await showMatchOnScreen(tx,match.eventId,matchId,"SCORE");await record(tx,matchId,"FINISH",{...matchOutcome(match.homeTeamId,match.awayTeamId,match.homeScore,match.awayScore),at:now.toISOString()});return {finished:true};
     }
     if(input.action==="homologate"){

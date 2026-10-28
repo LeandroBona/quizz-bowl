@@ -1,5 +1,6 @@
 export type BuzzerAnswer = { teamId: string; points: number };
-export type BuzzerPoints = 0 | 5 | 10;
+export type BuzzerPoints = 0 | 5 | 10 | 15 | 20;
+export type BuzzerFormat = "GROUP" | "KNOCKOUT";
 
 export function orderBuzzerAnswers<T extends { id: string; createdAt: Date | string; assignmentId?: string | null }>(answers: T[], events: { details: unknown }[]): T[] {
   const stage = new Map<string, number>();
@@ -9,6 +10,7 @@ export function orderBuzzerAnswers<T extends { id: string; createdAt: Date | str
     if (typeof details.answerId === "string") {
       if (details.buzzerStage === "FIRST") stage.set(details.answerId, 0);
       if (details.buzzerStage === "REBOUND") stage.set(details.answerId, 1);
+      if (details.buzzerStage === "REPLY") stage.set(details.answerId, 2);
     }
   }
   return [...answers].sort((a, b) => {
@@ -18,31 +20,29 @@ export function orderBuzzerAnswers<T extends { id: string; createdAt: Date | str
   });
 }
 
-export function buzzerState(homeTeamId: string, awayTeamId: string, answers: BuzzerAnswer[]) {
-  if (answers.length === 0) return { stage: "FIRST" as const, eligibleTeamIds: [homeTeamId, awayTeamId], allowedPoints: [0, 10] as const };
-  if (answers.length === 1 && answers[0].points <= 0) {
+export function buzzerState(homeTeamId: string, awayTeamId: string, answers: BuzzerAnswer[], format: BuzzerFormat = "GROUP") {
+  if (answers.length === 0) return { stage: "FIRST" as const, eligibleTeamIds: [homeTeamId, awayTeamId], allowedPoints: [0, 10] as readonly BuzzerPoints[] };
+  if (answers.some(answer => answer.points > 0)) return { stage: "DONE" as const, eligibleTeamIds: [] as string[], allowedPoints: [] as readonly BuzzerPoints[] };
+  if (answers.length === 1) {
     const otherTeamId = answers[0].teamId === homeTeamId ? awayTeamId : homeTeamId;
-    return { stage: "REBOUND" as const, eligibleTeamIds: [otherTeamId], allowedPoints: [0, 5] as const };
+    return { stage: "REBOUND" as const, eligibleTeamIds: [otherTeamId], allowedPoints: [0, format === "KNOCKOUT" ? 15 : 5] as readonly BuzzerPoints[] };
   }
-  return { stage: "DONE" as const, eligibleTeamIds: [] as string[], allowedPoints: [] as BuzzerPoints[] };
+  if (answers.length === 2 && format === "KNOCKOUT") return { stage: "REPLY" as const, eligibleTeamIds: [answers[0].teamId], allowedPoints: [0, 20] as readonly BuzzerPoints[] };
+  return { stage: "DONE" as const, eligibleTeamIds: [] as string[], allowedPoints: [] as readonly BuzzerPoints[] };
 }
 
-export function validateBuzzerAward(homeTeamId: string, awayTeamId: string, answers: BuzzerAnswer[], teamId: string, points: BuzzerPoints) {
-  const state = buzzerState(homeTeamId, awayTeamId, answers);
+export function validateBuzzerAward(homeTeamId: string, awayTeamId: string, answers: BuzzerAnswer[], teamId: string, points: BuzzerPoints, format: BuzzerFormat = "GROUP") {
+  const state = buzzerState(homeTeamId, awayTeamId, answers, format);
   if (state.stage === "DONE") throw new Error("Esta questão já foi decidida. Avance para a próxima.");
-  if (!state.eligibleTeamIds.includes(teamId)) throw new Error(state.stage === "REBOUND" ? "Somente a equipe adversária pode responder agora." : "Equipe não participa desta partida.");
-  if (!(state.allowedPoints as readonly number[]).includes(points)) throw new Error(state.stage === "FIRST" ? "A primeira resposta vale 10 pontos se correta ou 0 se errada." : "A segunda chance vale 5 pontos se correta ou 0 se errada.");
+  if (!state.eligibleTeamIds.includes(teamId)) throw new Error(state.stage === "FIRST" ? "Equipe não participa desta partida." : "Somente a equipe adversária ou a equipe com direito à próxima tentativa pode responder agora.");
+  if (!state.allowedPoints.includes(points)) throw new Error(`${state.stage === "FIRST" ? "A primeira resposta" : state.stage === "REBOUND" ? "A segunda chance" : "A tréplica"} vale ${state.allowedPoints.filter(value => value > 0).join(" ou ")} pontos se correta ou 0 se errada.`);
   return state;
 }
 
-export function validateBuzzerCorrection(answers: (BuzzerAnswer & { id: string })[], answerId: string, points: BuzzerPoints) {
+export function validateBuzzerCorrection(answers: (BuzzerAnswer & { id: string })[], answerId: string, points: BuzzerPoints, format: BuzzerFormat = "GROUP") {
   const index = answers.findIndex(answer => answer.id === answerId);
   if (index < 0) throw new Error("Resposta não encontrada nesta questão.");
-  if (index === 0) {
-    if (points === 5) throw new Error("A primeira resposta só pode valer 0 ou 10 pontos.");
-    if (points === 10 && answers.slice(1).some(answer => answer.points > 0)) throw new Error("Remova primeiro os pontos da segunda equipe antes de corrigir a primeira para 10.");
-  } else {
-    if (points === 10) throw new Error("A segunda chance só pode valer 0 ou 5 pontos.");
-    if (points === 5 && answers[0].points > 0) throw new Error("A primeira equipe já pontuou nesta questão.");
-  }
+  const allowed = index === 0 ? 10 : index === 1 ? format === "KNOCKOUT" ? 15 : 5 : index === 2 && format === "KNOCKOUT" ? 20 : -1;
+  if (points !== 0 && points !== allowed) throw new Error(`${index === 0 ? "A primeira resposta" : index === 1 ? "A segunda chance" : "A tréplica"} só pode valer 0 ou ${allowed} pontos.`);
+  if (points > 0 && answers.some((answer, i) => i !== index && answer.points > 0)) throw new Error("Remova primeiro os pontos da outra tentativa antes de atribuir este acerto.");
 }

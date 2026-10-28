@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { prisma } from "../src/server/db";
 import { createPhase, previewGroups, confirmGroups } from "../src/server/group-stage";
 import { bracketContext, previewBracket, confirmBracket, saveBracketScore, homologateBracketScore, revokeBracketScore, swapBracketSlots } from "../src/server/bracket";
+import { publicPresentation } from "../src/server/presentation";
 
 test("14 classificadas geram byes, avançam por resultado oficial e correção invalida dependências", async () => {
   const event = await prisma.event.create({ data: { name: "Teste de chaveamento" } });
@@ -87,13 +88,44 @@ test("mediação eliminatória só promove vencedora após homologação e revog
     await confirmBracket({ ...config, orderedIds: preview.orderedIds, signature: preview.signature });
     let state = (await bracketContext(event.id, phase.id)).bracket!;
     const final = state.nodes[0].match!;
-    const question = await prisma.question.create({ data: { eventId: event.id, statement: "Pergunta da final?", answer: "A", type: "SHORT_ANSWER", difficulty: "EASY", points: 10, timeSeconds: 30, isActive: true, status: "READY" } });
+    const questions = await Promise.all(Array.from({ length: 12 }, (_, index) => prisma.question.create({ data: { eventId: event.id, statement: `Pergunta ${index + 1} da final?`, answer: "A", type: "SHORT_ANSWER", difficulty: "EASY", points: 10, timeSeconds: 30, isActive: true, status: "READY" } })));
     const { assignMatchQuestions } = await import("../src/server/match-questions");
-    const { performMatchAction } = await import("../src/server/match-session");
-    await assignMatchQuestions(final.id, event.id, [question.id]);
+    const { matchSessionState, performMatchAction } = await import("../src/server/match-session");
+    await assignMatchQuestions(final.id, event.id, questions.slice(0, 10).map(question => question.id));
     await performMatchAction(final.id, { action: "configure", eventId: event.id, mode: "ALTERNATING", wrongPenalty: 0, defaultDurationSeconds: 30 });
     await performMatchAction(final.id, { action: "start", eventId: event.id });
     await performMatchAction(final.id, { action: "present", eventId: event.id });
+    const screen = await publicPresentation(event.id);
+    if (!("match" in screen)) throw new Error("Telão sem final selecionada");
+    assert.equal(screen.match?.scoringFormat, "KNOCKOUT");
+    await performMatchAction(final.id, { action: "reveal", eventId: event.id });
+    await performMatchAction(final.id, { action: "answer", eventId: event.id, teamId: final.homeTeamId, response: "Erro inicial", points: 0 });
+    await performMatchAction(final.id, { action: "answer", eventId: event.id, teamId: final.awayTeamId, response: "Erro na segunda chance", points: 0 });
+    const reply = await performMatchAction(final.id, { action: "answer", eventId: event.id, teamId: final.homeTeamId, response: "Acerto na tréplica", points: 20 });
+    assert.ok(reply && "id" in reply);
+    let mediated = await matchSessionState(final.id, event.id);
+    if (!("answers" in mediated)) throw new Error("Estado da final indisponível");
+    assert.equal(mediated.answers.length, 3);
+    assert.equal(mediated.homeScore, 20);
+    await assert.rejects(() => performMatchAction(final.id, { action: "answer", eventId: event.id, teamId: final.awayTeamId, response: "Duplicada", points: 15 }), /decidida/i);
+    for (let position = 2; position <= 3; position++) {
+      await performMatchAction(final.id, { action: "present", eventId: event.id });
+      await performMatchAction(final.id, { action: "answer", eventId: event.id, teamId: final.awayTeamId, response: "A", points: 10 });
+    }
+    for (let position = 4; position <= 10; position++) {
+      await performMatchAction(final.id, { action: "present", eventId: event.id });
+      for (const teamId of [final.homeTeamId, final.awayTeamId, final.homeTeamId]) await performMatchAction(final.id, { action: "answer", eventId: event.id, teamId, response: "Erro", points: 0 });
+    }
+    mediated = await matchSessionState(final.id, event.id);
+    if (!("answers" in mediated)) throw new Error("Estado da final indisponível");
+    assert.equal(mediated.homeScore, 20);
+    assert.equal(mediated.awayScore, 20);
+    await assert.rejects(() => performMatchAction(final.id, { action: "finish", eventId: event.id }), /questão extra/i);
+    await performMatchAction(final.id, { action: "present", eventId: event.id });
+    mediated = await matchSessionState(final.id, event.id);
+    if (!("questionUses" in mediated)) throw new Error("Questão extra indisponível");
+    assert.equal(mediated.session?.currentPosition, 11);
+    assert.equal(mediated.questionUses.length, 11);
     await performMatchAction(final.id, { action: "answer", eventId: event.id, teamId: final.homeTeamId, response: "A", points: 10 });
     await performMatchAction(final.id, { action: "finish", eventId: event.id });
     state = (await bracketContext(event.id, phase.id)).bracket!;

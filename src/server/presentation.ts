@@ -74,7 +74,7 @@ export async function publicPresentation(eventId: string) {
     const match = config?.matchId ? await prisma.match.findFirst({ where: { id: config.matchId, eventId, status: { not: "CANCELLED" } }, include: {
       homeTeam: { include: { members: { include: { participant: { select: { name: true, phase: { select: { name: true } } } } } } } },
       awayTeam: { include: { members: { include: { participant: { select: { name: true, phase: { select: { name: true } } } } } } } },
-      group: { select: { name: true } }, session: true,
+      group: { select: { name: true } }, bracketNode: { select: { id: true } }, session: true,
     } }) : null;
     if (!match) return { ...base, match: null, question: null };
     const includeMembers = mode === "TEAMS";
@@ -84,6 +84,7 @@ export async function publicPresentation(eventId: string) {
       homeTeam: teamPublic(match.homeTeam, includeMembers), awayTeam: teamPublic(match.awayTeam, includeMembers),
       ...(showScore ? { homeScore: match.homeScore, awayScore: match.awayScore } : {}),
       position: match.session?.currentPosition ?? null,
+      scoringFormat: match.bracketNode ? "KNOCKOUT" as const : "GROUP" as const,
       turnTeamId: match.session?.turnTeamId ?? null,
       timer: match.session ? { state: match.session.timerState, remainingMs: remainingTimerMs(match.session, now), serverNow: now.toISOString() } : null,
     };

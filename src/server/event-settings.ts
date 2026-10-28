@@ -35,7 +35,7 @@ export type EventSettingsInput = z.infer<typeof eventSettingsInput>;
 
 export const defaultEventSettings = {
   teamCount: 21, minMembers: 5, maxMembers: 6, groupCount: 7, teamsPerGroup: 3, qualifiersPerGroup: 2,
-  winPoints: 3, drawPoints: 1, lossPoints: 0, allowDraws: false, tieBreakers: defaultTieBreakers,
+  winPoints: 3, drawPoints: 1, lossPoints: 0, allowDraws: true, tieBreakers: defaultTieBreakers,
   bracketMode: "SEEDED" as const, avoidSameGroup: true, bracketTieRule: "SCORE" as const,
   questionsPerMatch: 5, responseSeconds: 30, wrongPenalty: 0,
 };

@@ -37,6 +37,10 @@ test("partida completa persiste pontuação, correções, auditoria e classifica
   await performMatchAction(match.id,{action:"homologate",eventId:event.id});
   const reofficial=await matchSessionState(match.id,event.id);
   if(!reofficial.officialAt||reofficial.homeScore!==15||reofficial.awayScore!==5)throw new Error("Nova homologação do placar falhou");
+  await performMatchAction(match.id,{action:"setScore",eventId:event.id,homeScore:10,awayScore:10,reason:"Empate confirmado pela banca",invalidateDependents:false});
+  await performMatchAction(match.id,{action:"homologate",eventId:event.id});
+  const tiedStandings=await phaseState(event.id,phase.id);
+  assert.ok(tiedStandings.groups[0].standings.every(row=>row.played===1&&row.draws===1&&row.points===1));
   const altMatch=await prisma.match.create({data:{eventId:event.id,homeTeamId:home.id,awayTeamId:away.id}});
   const q3=await prisma.question.create({data:{eventId:event.id,statement:"Terceira pergunta de teste?",answer:"Sim",type:"SHORT_ANSWER",difficulty:"EASY",points:10,timeSeconds:20,isActive:true,status:"READY"}});
   const q4=await prisma.question.create({data:{eventId:event.id,statement:"Quarta pergunta de teste?",answer:"Não",type:"SHORT_ANSWER",difficulty:"EASY",points:10,timeSeconds:20,isActive:true,status:"READY"}});

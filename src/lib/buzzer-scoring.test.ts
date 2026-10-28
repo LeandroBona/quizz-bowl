@@ -23,6 +23,20 @@ test("um acerto encerra a questão para ambas e correções não criam dois venc
   validateBuzzerCorrection([{ ...answers[0] }, { ...answers[1], points: 0 }], "1", 10);
 });
 
+test("mata-mata: segunda chance de 15 e tréplica de 20 para a primeira equipe", () => {
+  const first = [{ teamId: "A", points: 0 }];
+  assert.deepEqual(buzzerState("A", "B", first, "KNOCKOUT").allowedPoints, [0, 15]);
+  assert.throws(() => validateBuzzerAward("A", "B", first, "B", 5, "KNOCKOUT"), /segunda chance/i);
+  const second = [...first, { teamId: "B", points: 0 }];
+  assert.deepEqual(buzzerState("A", "B", second, "KNOCKOUT"), { stage: "REPLY", eligibleTeamIds: ["A"], allowedPoints: [0, 20] });
+  validateBuzzerAward("A", "B", second, "A", 20, "KNOCKOUT");
+  assert.equal(buzzerState("A", "B", [...second, { teamId: "A", points: 20 }], "KNOCKOUT").stage, "DONE");
+  assert.equal(buzzerState("A", "B", [{ teamId: "A", points: 0 }, { teamId: "B", points: 15 }], "KNOCKOUT").stage, "DONE");
+  assert.equal(buzzerState("A", "B", [...second, { teamId: "A", points: 0 }], "KNOCKOUT").stage, "DONE");
+  assert.throws(() => validateBuzzerCorrection([{ id: "1", ...first[0] }, { id: "2", teamId: "B", points: 15 }], "1", 10, "KNOCKOUT"), /remova primeiro/i);
+  assert.throws(() => validateBuzzerCorrection([{ id: "1", ...first[0] }, { id: "2", teamId: "B", points: 0 }, { id: "3", teamId: "A", points: 20 }], "2", 15, "KNOCKOUT"), /remova primeiro/i);
+});
+
 test("ordem da campainha usa o estágio persistido mesmo com horários iguais", () => {
   const time = "2026-10-26T10:00:00.000Z";
   const answers = [{ id: "a-segunda", createdAt: time, teamId: "B", points: 5 }, { id: "z-primeira", createdAt: time, teamId: "A", points: 0 }];
@@ -41,4 +55,14 @@ test("ordem da campainha usa o estágio persistido mesmo com horários iguais", 
     { details: { answerId: "q1-segunda", buzzerStage: "REBOUND" } },
   ]);
   assert.deepEqual(history.map(answer => answer.id), ["q1-segunda", "q2-primeira"]);
+  const reply = orderBuzzerAnswers([
+    { id: "a-terceira", assignmentId: "q1", createdAt: time },
+    { id: "z-primeira", assignmentId: "q1", createdAt: time },
+    { id: "m-segunda", assignmentId: "q1", createdAt: time },
+  ], [
+    { details: { answerId: "z-primeira", buzzerStage: "FIRST" } },
+    { details: { answerId: "m-segunda", buzzerStage: "REBOUND" } },
+    { details: { answerId: "a-terceira", buzzerStage: "REPLY" } },
+  ]);
+  assert.deepEqual(reply.map(answer => answer.id), ["z-primeira", "m-segunda", "a-terceira"]);
 });

@@ -77,7 +77,7 @@ async function groupsStep(eventId: string) {
     const run = await requireStage(tx, eventId, 2);
     const teams = await tx.team.findMany({ where: { eventId }, select: { id: true, name: true }, orderBy: { name: "asc" } });
     if (teams.length !== 21) throw new ApiError(409, "A simulação exige 21 equipes antes do sorteio dos grupos.");
-    const phase = await tx.groupPhase.create({ data: { eventId, name: "Fase de grupos · Demonstração", groupCount: 7, teamsPerGroup: 3, qualifiersPerGroup: 2, winPoints: 3, drawPoints: 1, lossPoints: 0, allowDraws: false, tieBreakers: defaultTieBreakers, format: "ROUND_ROBIN_SINGLE", confirmedAt: new Date() } });
+    const phase = await tx.groupPhase.create({ data: { eventId, name: "Fase de grupos · Demonstração", groupCount: 7, teamsPerGroup: 3, qualifiersPerGroup: 2, winPoints: 3, drawPoints: 1, lossPoints: 0, allowDraws: true, tieBreakers: defaultTieBreakers, format: "ROUND_ROBIN_SINGLE", confirmedAt: new Date() } });
     const drawn = drawGroups(teams, 7, 3, 2, demoRandom(`${run.seed}:groups`));
     for (let index = 0; index < drawn.length; index++) {
       const group = await tx.group.create({ data: { eventId, phaseId: phase.id, name: `Grupo ${groupLabel(index)}`, stage: phase.name, teams: { create: drawn[index].map(team => ({ teamId: team.id, phaseId: phase.id })) } } });
